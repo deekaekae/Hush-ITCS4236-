@@ -2,110 +2,221 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class PriestController : MonoBehaviour, IMoveable, IListener
+public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
 {
     // movement 
-    public float defaultSpeed = 3f;
+    public float speedHold = 3f;
     public float alertSpeed = 5f;
     private float currentSpeed;
     public float obstacleAvoidanceRange = 1.5f;
 
     // sound detection 
-    public float hearingRange = 15f;
-    private float increasedHearingRange = 25f; // Hearing range at higher threat levels
+    public float hearingRange = 40f;
+    private float increasedHearingRange = 50f;
+    private float highNoiseThreshold = 3f; // Threshold for high noise levels
 
     // Target tracking
     private Transform target;
     private Vector3 targetPosition;
+    [SerializeField] private Transform playerTransform;
 
     // Threat level management
     private int threatLevel = 0;
 
+    // Roam Behavior
+    private Vector3 roamCenter;
+    [SerializeField] private float roamRadius = 10f;
+    [SerializeField] private float roamSpeed = 2f;
+    [SerializeField] private float rotationSpeed = 2f;
+    [SerializeField] private float biasFactor = 0.7f;
+    private bool isRoaming = false;
+    private Vector3 roamTarget;
+    private bool isPursuingPlayer = true;    
     private void Awake(){
-        currentSpeed = defaultSpeed;
+        currentSpeed = speedHold; 
+        playerTransform = GameObject.FindGameObjectWithTag("Player")?.transform;
+
+        roamCenter = transform.position;
+        SetRoamArea(roamCenter, roamRadius);
+        StartRoaming();
     }
 
     private void Update()
     {
+        RoamIfIdle();
         ListenForSounds();
         MoveTowardsTarget();
     }
 
-    //From IMoveable Interface
     public void Move(Vector3 direction){
-        // Perform obstacle avoidance check before moving
-        RaycastHit hit;
-        if (Physics.Raycast(transform.position, direction, out hit, obstacleAvoidanceRange)){
-            // Adjust direction to avoid obstacles
-            Vector3 avoidDirection = Vector3.Cross(Vector3.up, direction).normalized;
-            direction = (direction + avoidDirection).normalized;
-        }
+        if(direction == Vector3.zero) return;
 
-        // Move in the (possibly adjusted) direction
+        direction = AvoidObstacles(direction);
         transform.position += direction * currentSpeed * Time.deltaTime;
 
-        // Smooth rotation to face movement direction
         if (direction != Vector3.zero){
             Quaternion targetRotation = Quaternion.LookRotation(direction);
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * 5f);
         }
     }
 
+    private Vector3 AvoidObstacles(Vector3 direction){
+        RaycastHit hit;
+        Vector3 adjustedDirection = direction;
+
+        if (Physics.SphereCast(transform.position, 0.5f, direction, out hit, obstacleAvoidanceRange)){
+            Vector3 avoidDirection = Vector3.Cross(Vector3.up, direction).normalized;
+            adjustedDirection = (direction + avoidDirection).normalized;
+
+            int attempts = 0;
+            while (Physics.SphereCast(transform.position, 0.5f, adjustedDirection, out hit, obstacleAvoidanceRange) && attempts < 3){
+                adjustedDirection = Vector3.Cross(Vector3.up, adjustedDirection).normalized;
+                attempts++;
+            }
+        }
+
+        return adjustedDirection;
+    }
+
     public void Stop(){
         currentSpeed = 0f;
     }
 
-    // Sets a new target for the Priest to follow
     public void SetTarget(Transform newTarget){
         target = newTarget;
         targetPosition = target.position;
     }
 
     private void MoveTowardsTarget(){
-        if (target == null) return;
+        if (target == null && targetPosition == Vector3.zero) return;
 
-        // Calculate direction toward the target and move
         Vector3 direction = (targetPosition - transform.position).normalized;
         Move(direction);
     }
 
-    // From IListener Interface
     public void HearSound(Vector3 soundPosition, float intensity){
         if (Vector3.Distance(transform.position, soundPosition) <= hearingRange){
-            SetTargetPosition(soundPosition);  // Move toward the sound position
-            SetAlert(true);                    // Increase speed when moving toward sound
+            SetTargetPosition(soundPosition);
+            SetAlert(true);
+            IncreaseThreatLevel();
         }
     }
 
-    private void ListenForSounds(){
-        Transform soundTransform = SoundManager.Instance.GetLoudestSoundSource(transform.position);
+    private void ListenForSounds()
+    {
+        float playerNoiseLevel = SoundManager.Instance.GetNoiseLevel(playerTransform);
 
-        if (soundTransform != null && Vector3.Distance(transform.position, soundTransform.position) <= hearingRange){
-            HearSound(soundTransform.position, 1.0f); // Pass intensity if applicable
+        // Prioritize pursuing the player if they are making noise above the threshold within range
+        if (playerNoiseLevel >= highNoiseThreshold && Vector3.Distance(transform.position, playerTransform.position) <= hearingRange)
+        {
+            SetTarget(playerTransform);
+            SetAlert(true);
+
+            if (!isPursuingPlayer)
+            {
+                isPursuingPlayer = true;
+                Debug.Log("Priest is now pursuing the player due to high noise level.");
+            }
+        }
+        else
+        {
+            // Pursue the loudest non-player noise if the player is not within range or not noisy enough
+            Transform loudestSoundSource = SoundManager.Instance.GetLoudestSoundSource(transform.position);
+
+            if (loudestSoundSource != null)
+            {
+                HearSound(loudestSoundSource.position, 1.0f);
+            }
+            else
+            {
+                // No sounds in range, revert to roaming
+                target = null;
+                StartRoaming();
+            }
+
+            if (isPursuingPlayer)
+            {
+                isPursuingPlayer = false;
+                DebugLogger.Instance.Log("ListenForSound", "Priest stops pursuing player and roams.", 5f);
+            }
         }
     }
 
-
-    // Adjust speed based on alert status
     public void SetAlert(bool isAlert){
-        currentSpeed = isAlert ? alertSpeed : defaultSpeed;
+        currentSpeed = isAlert ? alertSpeed : speedHold;
     }
 
-    // Method to increase threat level and adjust behavior
     public void IncreaseThreatLevel(){
         threatLevel++;
         AdjustBehavior();
     }
 
-    // Adjust behavior based on the current threat level
     private void AdjustBehavior(){
-        // Increase hearing range and set alert mode based on threat level
         hearingRange = threatLevel >= 3 ? increasedHearingRange : 15f;
-        SetAlert(threatLevel >= 2); // Set alert mode if threat level is high
+        SetAlert(threatLevel >= 2);
     }
 
     private void SetTargetPosition(Vector3 position){
-        target = null;       // Clear current target Transform
-        targetPosition = position;  // Set the target position to the sound's position
+        target = null;
+        targetPosition = position;
+    }
+
+    private void RoamIfIdle(){
+        if (!isRoaming || target != null) return;
+
+        if(Vector3.Distance(transform.position, roamTarget) < .5f){
+            roamTarget = getRoamTarget();
+        }
+
+        Vector3 direction = (roamTarget - transform.position).normalized;
+        transform.position += direction * roamSpeed * Time.deltaTime;
+
+        if(direction != Vector3.zero){
+            Quaternion targetRotation = Quaternion.LookRotation(direction);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+        }
+    }
+
+    private Vector3 getRoamTarget(){
+        Vector3 roamTarget;
+        Vector3 lastKnownPosition = playerTransform.position; // Last known location of the player
+        float safeDistance = 1.5f; // Minimum distance to keep from player's last known position
+
+        // Generate a target around the player's last known location
+        for (int attempts = 0; attempts < 5; attempts++) {
+            // Generate a random point within the roam radius around the player's last known position
+            Vector3 randomOffset = new Vector3(
+                Random.Range(-1f, 1f),
+                0,
+                Random.Range(-1f, 1f)
+            ).normalized * Random.Range(safeDistance, roamRadius);
+
+            roamTarget = lastKnownPosition + randomOffset;
+
+            // Check if the generated roamTarget is at least 'safeDistance' away from the player
+            if (Vector3.Distance(roamTarget, lastKnownPosition) >= safeDistance) {
+                return roamTarget;
+            }
+        }
+
+        // Fallback: If no valid target was found, use the roamCenter as a default
+        roamTarget = roamCenter + Random.insideUnitSphere * roamRadius;
+        roamTarget.y = transform.position.y;
+        return roamTarget;
+    }
+
+
+    public void StartRoaming(){
+        isRoaming = true;
+        roamTarget = getRoamTarget();
+    }
+
+    public void StopRoaming(){
+        isRoaming = false;
+    }
+
+    public void SetRoamArea(Vector3 center, float radius){
+        roamCenter = center;
+        roamRadius = radius;
     }
 }

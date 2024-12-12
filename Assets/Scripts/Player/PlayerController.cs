@@ -6,8 +6,16 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
 {
     //movement 
     private CharacterController characterController;
-    public float walkSpeed = 5f;
+    public float walkSpeed = 6f;
     public float crouchSpeed =2f;
+    //Sprinting
+    public float sprintMultiplier = 2f;
+    private bool isSprinting = false;
+    private float speedHold = 6f; //hold value for default walk speed
+    private float speedRampUpRate = 5f;
+    private float maxSprintSpeed = 12f;
+    
+
    
     //crouching
     private float originalHeight = 1f;
@@ -38,7 +46,9 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
     }
 
 
-
+    void start(){
+        walkSpeed = speedHold;
+    }
     // Update is called once per frame
     void Update()
     {
@@ -46,6 +56,7 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
         HandleHiding();
         HandleCrouching();
         HandleJumping();
+        HandleSprinting();
         UpdateNoiseLevel();
         
     }
@@ -63,6 +74,7 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
 
     private void HandleJumping(){
         if (isGrounded && Input.GetKeyDown(KeyCode.Space)){
+            //set vertical velocity based on height and gravity
             verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity );
         }
     }
@@ -73,7 +85,8 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
             //If player crouching, then crouchHeight, else OriginalHeight
             characterController.height = isCrouching ? crouchHeight: originalHeight; 
         }
-
+        
+        //moved targetCameraPosition if crouching, else OG camera position
         Vector3 targetCameraPosition = isCrouching 
             ? originalCameraPosition + new Vector3(0, crouchCameraOffset, 0) 
             : originalCameraPosition;
@@ -84,6 +97,20 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
             targetCameraPosition,
             crouchTransitionSpeed * Time.deltaTime
         );
+    }
+
+    private void HandleSprinting(){
+        isSprinting = Input.GetKey(KeyCode.LeftShift) && !isCrouching;
+        if(isGrounded){
+            if(isSprinting){
+                //gradually ramp up sprint speed until maxSprintSpeed reached
+                walkSpeed = Mathf.MoveTowards(walkSpeed, maxSprintSpeed, speedRampUpRate * Time.deltaTime);
+            }
+            else{
+                walkSpeed = speedHold;
+            }
+            DebugLogger.Instance.Log("PlayerNoise", $"Player NoiseLevel: {NoiseLevel} ", 10f);
+        }
     }
 
     //From IHidable Interface
@@ -100,11 +127,15 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
 
     //From IProduceSound Interface
     public void EmitSound(){
-        if(!isHiding){
-            //If player is crouching, then reduce sound, else default walking sound
-            NoiseLevel = isCrouching ? 0.5f : 1f; 
-            SoundManager.Instance.RegisterSoundSource(this);
-        }
+        NoiseLevel = (isHiding, isSprinting, isCrouching) switch{
+        (true, _, _) => 0f,           // Hiding: No sound emitted
+        (false, true, _) => 4f,       // Sprinting: High noise level
+        (false, false, true) => 0f, // Crouching: Lower noise level
+        _ => 2f                       // Default walking noise level
+        };
+
+        SoundManager.Instance.RegisterSoundSource(this);
+        DebugLogger.Instance.Log("PlayerNoise", $"Player NoiseLevel: {NoiseLevel}", 10f);
     }
 
     private void UpdateNoiseLevel(){
@@ -122,6 +153,7 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
         if(isGrounded && verticalVelocity.y < 0){
             verticalVelocity.y = -2f;
         }
+        
         //vertical horizontal movement
         float horizontal = Input.GetAxis("Horizontal");
         float vertical = Input.GetAxis("Vertical");
@@ -138,17 +170,17 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
         }
 
         Move(moveDirection.normalized * speed);
-
     }
     
-    //press H to hide, toggle if already hiding
+    //press H to hide, toggle if already hiding (hold)
     private void HandleHiding(){
-        if(Input.GetKeyDown(KeyCode.H)){
+        if(Input.GetKeyDown(KeyCode.Mouse1)){
             if(isHiding){
                 ExitHide();
             }
             else{
                 Hide();
+                DebugLogger.Instance.Log("isHiding", $"Player Holds breath, NoiseLevel: {NoiseLevel}", 3f );
             }
         }
     }
