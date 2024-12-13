@@ -172,7 +172,7 @@ public class PlayerController : MonoBehaviour, IMoveable, IHideable, IProduceSou
         Move(moveDirection.normalized * speed);
     }
     
-    //press H to hide, toggle if already hiding (hold)
+    //press H to hide or "Hold Breath", toggle if already hiding (hold)
     private void HandleHiding(){
         if(Input.GetKeyDown(KeyCode.Mouse1)){
             if(isHiding){

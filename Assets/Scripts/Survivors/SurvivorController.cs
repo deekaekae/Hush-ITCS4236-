@@ -34,8 +34,11 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
     [SerializeField] private float escapeSpeed = 10f;  // Speed at which the survivor escapes after healing
     private bool isEscaping = false;
 
+    //animation
+    public Animator animator;
 
-    
+    // Grounding
+    [SerializeField] private LayerMask terrainLayer;
 
     private void Start(){
         alertTimer = alertInterval;
@@ -46,7 +49,6 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
 
         playerTransform = GameObject.FindGameObjectWithTag("Player")?.transform;
         priestTransform = GameObject.FindGameObjectWithTag("Priest")?.transform;
-
     }
 
     private void Update(){
@@ -59,9 +61,91 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
         DetectPriest();
         RoamIfIdle();
         HandleHealing();
+        StayGrounded();
+        UpdateAnimation();
     }
 
-    // Manage sound emission based on current state
+    private void StayGrounded(){
+        RaycastHit hit;
+        if (Physics.Raycast(transform.position + Vector3.up * 1.5f, Vector3.down, out hit, 10f, terrainLayer)){
+            Vector3 newPosition = transform.position;
+            newPosition.y = hit.point.y;
+            transform.position = newPosition;
+            transform.rotation = Quaternion.Euler(0, transform.rotation.eulerAngles.y, 0); // Keep survivor upright
+        }
+        else {
+            Debug.LogWarning($"Survivor is not detecting terrain. Position: {transform.position}");
+        }
+    }
+
+    private void UpdateAnimation(){
+        if (isEscaping){
+            animator.SetBool("isRunning", true);
+            animator.SetBool("isWalking", false);
+        } else if (isRoaming) {
+            animator.SetBool("isWalking", true);
+            animator.SetBool("isRunning", false);
+        } else {
+            animator.SetBool("isWalking", false);
+            animator.SetBool("isRunning", false);
+        }
+    }
+
+    public void Move(Vector3 direction){
+        if (direction == Vector3.zero) return;
+
+        direction = AvoidObstacles(direction);
+        transform.position += direction * (isEscaping ? escapeSpeed : roamSpeed) * Time.deltaTime;
+
+        if (direction != Vector3.zero){
+            Quaternion targetRotation = Quaternion.LookRotation(direction);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * rotationSpeed);
+        }
+    }
+
+    private Vector3 AvoidObstacles(Vector3 direction){
+        RaycastHit hit;
+        Vector3 adjustedDirection = direction;
+
+        if (Physics.SphereCast(transform.position, 0.5f, direction, out hit, 1.5f)){
+            Vector3 avoidDirection = Vector3.Cross(Vector3.up, direction).normalized;
+            adjustedDirection = (direction + avoidDirection).normalized;
+        }
+
+        return adjustedDirection;
+    }
+
+    private void Escape(){
+        Vector3 escapeDirection;
+
+        // Escape opposite direction of priest
+        if (priestTransform != null){
+            escapeDirection = (transform.position - priestTransform.position).normalized;
+        }
+        else{
+        // If Priest is not found, escape in a random direction
+            escapeDirection = Random.onUnitSphere;
+            escapeDirection.y = 0; 
+        }   
+
+        // Update rotation to face the escape direction
+        if (escapeDirection != Vector3.zero){
+            Quaternion targetRotation = Quaternion.LookRotation(escapeDirection);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * rotationSpeed);
+        }
+
+        // Move the survivor out of bounds
+        transform.position += escapeDirection * escapeSpeed * Time.deltaTime;
+        if (IsOutOfBounds(transform.position)){
+            Destroy(gameObject);
+    }
+    }
+
+
+    private bool IsOutOfBounds(Vector3 position){
+        return position.x < -400f || position.x > 400f || position.z < -400f || position.z > 400f;
+    }
+
     private void HandleAlertSound(){
         // Only emit sound if the survivor is not in danger
         if (isInDanger) return;
@@ -70,47 +154,40 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
         alertTimer = alertTimer <= 0 ? alertInterval : alertTimer - Time.deltaTime;
         
         // Emit sound if alert timer completes and `hasEmittedSound` is false
-        hasEmittedSound = alertTimer switch
-        {
+        hasEmittedSound = alertTimer switch {
             <= 0 when !hasEmittedSound => EmitSoundAndSetFlag(),
             _ => hasEmittedSound
         };
     }
 
-    // Emits sound and sets the flag to prevent multiple registrations within interval
     private bool EmitSoundAndSetFlag(){
         EmitSound();
         return true;
     }
 
-    // Detect the Priest and manage the danger state based on proximity
     private void DetectPriest(){
         bool priestInRange = priestTransform != null && Vector3.Distance(transform.position, priestTransform.position) <= detectionRange;
 
         // Use a switch expression to handle the danger state transitions
-        isInDanger = (isInDanger, priestInRange) switch
-        {
+        isInDanger = (isInDanger, priestInRange) switch {
             (false, true) => EnterDangerState(),   // Enter danger state if Priest is in range
             (true, false) => ExitDangerState(),    // Exit danger state if Priest leaves range
             _ => isInDanger                        // Maintain current state if no change
         };
     }
 
-    // Called when entering danger state
     private bool EnterDangerState(){
         NoiseLevel = 0f;
         SoundManager.Instance?.UnregisterSoundSource(this);
         return true;
     }
 
-    // Called when exiting danger state
     private bool ExitDangerState(){
         NoiseLevel = 1f;
         SoundManager.Instance?.RegisterSoundSource(this);
         return false;
     }
 
-    // Implementing IProduceSound
     public void EmitSound(){
         if (!isInDanger){
             DebugLogger.Instance.Log("SurvivorAlert", "Survivor is emitting sound to alert player", 10f);
@@ -118,12 +195,10 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
         }
     }
 
-    // Assigns the Priest's transform for proximity detection
     public void SetPriestTransform(Transform priest){
         priestTransform = priest;
     }
 
-    //IRoam Interface
     public void StartRoaming(){
         isRoaming = true;
         roamTarget = GetRandomRoamPoint();
@@ -144,7 +219,6 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
     }
 
     private void RoamIfIdle(){
-        
         if(!isRoaming) return;
 
         if(isRoaming && Vector3.Distance(transform.position, roamTarget) < .5f){
@@ -160,27 +234,20 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
         }
     }
 
-    private void HandleHealing()
-    {
+    private void HandleHealing(){
         if (isHealed || playerTransform == null) return; // Skip if already healed or no player
 
-        if (Vector3.Distance(transform.position, playerTransform.position) <= 3f && Input.GetKey(KeyCode.Alpha5))
-        {
+        if (Vector3.Distance(transform.position, playerTransform.position) <= 3f && Input.GetKey(KeyCode.Alpha5)){
             healTimer += Time.deltaTime;
-            if (healTimer >= healTime)
-            {
+            if (healTimer >= healTime){
                 HealSurvivor();
             }
-        }
-        else
-        {
+        } else {
             healTimer = 0f; // Reset the timer if player moves away or releases the key
         }
     }
 
-    // Heal survivor and start escape behavior
-    private void HealSurvivor()
-    {
+    private void HealSurvivor(){
         isHealed = true;
         healTimer = 0f;
         StopRoaming();  // Stop any roaming behavior
@@ -189,40 +256,10 @@ public class SurvivorController : MonoBehaviour, IProduceSound, IRoam
         Debug.Log($"{gameObject.name} is healed and escaping.");
     }
 
-    // Move survivor away from the priest and out of map bounds
-    private void Escape()
-    {
-        Vector3 escapeDirection;
-
-        // Determine escape direction as opposite of the Priest
-        if (priestTransform != null)
-        {
-            escapeDirection = (transform.position - priestTransform.position).normalized;
-        }
-        else
-        {
-            // If Priest is not found, escape in a random direction
-            escapeDirection = Random.onUnitSphere;
-            escapeDirection.y = 0; // Keep the escape direction on the horizontal plane
-        }
-
-        // Move the survivor out of bounds
-        transform.position += escapeDirection * escapeSpeed * Time.deltaTime;
-
-        if(IsOutOfBounds(transform.position)){
-            //Destroy(GameObject);
-        }
-        // Optional: Add fade-out effect here if needed to make the survivor disappear visually
+    /*
+    public bool IsHealed(){
+        return isHealed; // Use the existing `isHealed` variable
     }
+    */
 
-    private bool IsOutOfBounds(Vector3 position)
-    {
-        return position.x < -400f || position.x > 400f || position.z < -400f || position.z > 400f;
-    }
-
-
-    
-
-    // IMPLEMENET YOU HEAL THE SURVIVOR, WHEN THEY HEAL THEY RUN OFF THE MAP
-    // RODEO THE PRIEST TO SAVE AS MANY AS POSSIBLE
 }

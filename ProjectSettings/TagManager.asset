@@ -6,11 +6,12 @@ TagManager:
   tags:
   - Survivor
   - Priest
+  - Terrain
   layers:
   - Default
   - TransparentFX
   - Ignore Raycast
-  - 
+  - Terrain
   - Water
   - UI
   - 

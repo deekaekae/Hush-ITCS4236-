@@ -1,9 +1,12 @@
+
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
 {
+    public Animator animator; // Reference to Animator
+
     // movement 
     public float speedHold = 3f;
     public float alertSpeed = 5f;
@@ -29,10 +32,14 @@ public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
     [SerializeField] private float roamSpeed = 2f;
     [SerializeField] private float rotationSpeed = 2f;
     [SerializeField] private float biasFactor = 0.7f;
+    [SerializeField] private LayerMask Terrain; // LayerMask for terrain
     private bool isRoaming = false;
     private Vector3 roamTarget;
     private bool isPursuingPlayer = true;    
+
     private void Awake(){
+        animator = GetComponent<Animator>(); // Ensure Animator is assigned
+
         currentSpeed = speedHold; 
         playerTransform = GameObject.FindGameObjectWithTag("Player")?.transform;
 
@@ -46,6 +53,25 @@ public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
         RoamIfIdle();
         ListenForSounds();
         MoveTowardsTarget();
+        UpdateAnimation();
+        StayGrounded(); // Move StayGrounded logic into Update for consistent position adjustments
+    }
+
+    private void StayGrounded()
+    {
+        RaycastHit hit;
+        // Adjust raycast to ensure it hits the terrain
+        if (Physics.Raycast(transform.position + Vector3.up * 1.5f, Vector3.down, out hit, 10f, Terrain))
+        {
+            // Snap the priest's Y position to the terrain height
+            Vector3 newPosition = transform.position;
+            newPosition.y = hit.point.y;
+            transform.position = newPosition;
+        }
+        else
+        {
+            Debug.LogWarning($"StayGrounded: Priest is not detecting terrain! Position: {transform.position}");
+        }
     }
 
     public void Move(Vector3 direction){
@@ -102,40 +128,33 @@ public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
         }
     }
 
-    private void ListenForSounds()
-    {
+    private void ListenForSounds(){
         float playerNoiseLevel = SoundManager.Instance.GetNoiseLevel(playerTransform);
 
         // Prioritize pursuing the player if they are making noise above the threshold within range
-        if (playerNoiseLevel >= highNoiseThreshold && Vector3.Distance(transform.position, playerTransform.position) <= hearingRange)
-        {
+        if (playerNoiseLevel >= highNoiseThreshold && Vector3.Distance(transform.position, playerTransform.position) <= hearingRange){
             SetTarget(playerTransform);
             SetAlert(true);
 
-            if (!isPursuingPlayer)
-            {
+            if (!isPursuingPlayer){
                 isPursuingPlayer = true;
                 Debug.Log("Priest is now pursuing the player due to high noise level.");
             }
         }
-        else
-        {
+        else{
             // Pursue the loudest non-player noise if the player is not within range or not noisy enough
             Transform loudestSoundSource = SoundManager.Instance.GetLoudestSoundSource(transform.position);
 
-            if (loudestSoundSource != null)
-            {
+            if (loudestSoundSource != null){
                 HearSound(loudestSoundSource.position, 1.0f);
             }
-            else
-            {
+            else{
                 // No sounds in range, revert to roaming
                 target = null;
                 StartRoaming();
             }
 
-            if (isPursuingPlayer)
-            {
+            if (isPursuingPlayer){
                 isPursuingPlayer = false;
                 DebugLogger.Instance.Log("ListenForSound", "Priest stops pursuing player and roams.", 5f);
             }
@@ -205,7 +224,6 @@ public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
         return roamTarget;
     }
 
-
     public void StartRoaming(){
         isRoaming = true;
         roamTarget = getRoamTarget();
@@ -218,5 +236,12 @@ public class PriestController : MonoBehaviour, IMoveable, IListener, IRoam
     public void SetRoamArea(Vector3 center, float radius){
         roamCenter = center;
         roamRadius = radius;
+    }
+
+    private void UpdateAnimation(){
+        // Update animation states
+        bool isMoving = currentSpeed > 0;
+        animator.SetBool("isWalking", isMoving && currentSpeed == speedHold);
+        animator.SetBool("isRunning", isMoving && currentSpeed == alertSpeed);
     }
 }
